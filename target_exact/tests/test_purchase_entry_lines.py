@@ -10,6 +10,7 @@ xmltodict.parse - not a reimplementation of the logic.
 from unittest.mock import MagicMock, patch
 
 import pytest
+from singer_sdk.exceptions import FatalAPIError
 
 from target_exact.sinks import PurchaseEntriesSink
 
@@ -435,3 +436,58 @@ class TestReplacePurchaseEntryLinesFlag:
 
         assert sink.request_api.call_count == 1
         sink.logger.warning.assert_not_called()
+
+
+class TestUpsertRecordAlreadyProcessed:
+    """Exact rejects any PUT on a PurchaseEntry that's already processed (booked)
+    with a 500 "Already processed". That can never succeed on retry, and failing
+    the record kept Optics11's invoice re-exported (and failing) on every run, so
+    an update hitting it must report success against the existing entry id.
+    """
+
+    ALREADY_PROCESSED = FatalAPIError(
+        {
+            "error": "Already processed",
+            "url": "https://start.exactonline.nl/api/v1/123456/purchaseentry/PurchaseEntries(guid'entry-1')",
+            "status code": 500,
+        }
+    )
+
+    def test_put_already_processed_reports_success_without_update(self):
+        sink = make_sink(
+            [self.ALREADY_PROCESSED],
+            config={"replace_purchase_entry_lines_on_update": True},
+        )
+        record = {
+            "Id": "entry-1",
+            "Currency": "EUR",
+            "PurchaseEntryLines": [{"AmountFC": 100}],
+        }
+
+        id_, success, state_updates = sink.upsert_record(record, {})
+
+        assert id_ == "entry-1"
+        assert success is True
+        assert "is_updated" not in state_updates
+        # only the rejected header PUT - lines of a processed entry must not be touched
+        assert sink.request_api.call_count == 1
+        assert sink.request_api.call_args_list[0].args[0] == "PUT"
+        sink.logger.warning.assert_called_once()
+
+    def test_put_other_error_still_raises(self):
+        sink = make_sink(
+            [FatalAPIError({"error": "Mandatory: Supplier", "status code": 400})]
+        )
+        record = {"Id": "entry-1", "Currency": "EUR"}
+
+        with pytest.raises(Exception, match="Mandatory: Supplier"):
+            sink.upsert_record(record, {})
+
+    def test_post_already_processed_still_raises(self):
+        """Only an update of an existing entry can be safely skipped - a create that
+        fails produced no entry, so there's no id to report success against."""
+        sink = make_sink([self.ALREADY_PROCESSED])
+        record = {"Currency": "EUR", "PurchaseEntryLines": [{"AmountFC": 100}]}
+
+        with pytest.raises(Exception, match="Already processed"):
+            sink.upsert_record(record, {})
