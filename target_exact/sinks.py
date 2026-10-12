@@ -802,6 +802,13 @@ class PurchaseEntriesSink(ExactSink):
                     method, endpoint=endpoint, request_data=record
                 )
             except Exception as e:
+                if method == "PUT" and "Already processed" in str(e):
+                    self.logger.warning(
+                        f"{self.name} {id} is already processed in Exact and can't be updated, skipping update."
+                    )
+                    state_updates.pop("is_updated", None)
+                    return id, True, state_updates
+
                 # delete attachments if entry is new and posting failed
                 if method == "POST" and record.get("Document"):
                     self.logger.info(f"Error happened while creating PurchaeEntry, deleting attachments associated with it...")
