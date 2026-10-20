@@ -654,6 +654,11 @@ class PurchaseEntriesSink(ExactSink):
                             project_id = self.get_id("/project/Projects", {"$filter": f"Description eq '{self.escape_odata_string(line.get('projectName'))}'"})
                             if project_id:
                                 invoice_line["Project"] = project_id
+                        # period for accrued/deferred costs
+                        if line.get("periodFrom"):
+                            invoice_line["From"] = line.get("periodFrom")
+                        if line.get("periodTo"):
+                            invoice_line["To"] = line.get("periodTo")
                         invoice_lines.append(invoice_line)
 
                 payload["PurchaseEntryLines"] = invoice_lines
